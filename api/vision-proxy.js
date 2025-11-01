@@ -1,6 +1,10 @@
 export default async function handler(req, res) {
   try {
-    const { base64 } = await req.json();
+    // Vercel API는 req.json()이 없으므로, 직접 body를 읽어야 합니다.
+    let body = '';
+    for await (const chunk of req) body += chunk;
+
+    const { base64 } = JSON.parse(body || '{}');
     if (!base64) return res.status(400).json({ ok: false, error: "NO_IMAGE" });
 
     const VISION_KEY = process.env.VISION_KEY;
