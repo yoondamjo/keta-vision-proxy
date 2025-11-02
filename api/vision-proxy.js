@@ -1,36 +1,64 @@
+// === K-ETA Vision Proxy (for Google Vision API) ===
+// 위치: /api/vision-proxy.js
+
+export const config = {
+  api: { bodyParser: { sizeLimit: "10mb" } } // 대용량 여권 이미지 허용
+};
+
 export default async function handler(req, res) {
+  // --- CORS 허용 (워드프레스 도메인만 추가 권장) ---
+  const origin = req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") return res.status(200).end();
+
+  // --- 요청 검증 ---
+  if (req.method !== "POST") {
+    return res.status(405).json({ success: false, error: "METHOD_NOT_ALLOWED" });
+  }
+
   try {
-    // Vercel API는 req.json()이 없으므로, 직접 body를 읽어야 합니다.
-    let body = '';
-    for await (const chunk of req) body += chunk;
+    const { base64, key } = req.body || {};
+    const apiKey = process.env.GOOGLE_VISION_KEY || key;
 
-    const { base64 } = JSON.parse(body || '{}');
-    if (!base64) return res.status(400).json({ ok: false, error: "NO_IMAGE" });
+    if (!base64) return res.status(400).json({ success: false, error: "NO_IMAGE" });
+    if (!apiKey) return res.status(400).json({ success: false, error: "NO_API_KEY" });
 
-    const VISION_KEY = process.env.VISION_KEY;
-    if (!VISION_KEY) return res.status(500).json({ ok: false, error: "MISSING_KEY" });
+    // --- Vision API 요청 본문 ---
+    const body = {
+      requests: [{
+        image: { content: base64 },
+        features: [{ type: "DOCUMENT_TEXT_DETECTION" }],
+        imageContext: { languageHints: ["mrz", "en"] }
+      }]
+    };
 
-    const apiUrl = `https://vision.googleapis.com/v1/images:annotate?key=${VISION_KEY}`;
-
-    const resp = await fetch(apiUrl, {
+    // --- Vision API 호출 ---
+    const response = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        requests: [
-          {
-            image: { content: base64 },
-            features: [{ type: "DOCUMENT_TEXT_DETECTION" }],
-          },
-        ],
-      }),
+      body: JSON.stringify(body)
     });
 
-    const json = await resp.json();
-    const text = json.responses?.[0]?.fullTextAnnotation?.text || "";
-    if (!text) return res.status(200).json({ ok: false, error: "NO_TEXT" });
+    const data = await response.json();
+    const text = data?.responses?.[0]?.fullTextAnnotation?.text || "";
+    const tokens = data?.responses?.[0]?.textAnnotations || [];
 
-    res.status(200).json({ ok: true, text });
+    if (!text && (!tokens || tokens.length === 0)) {
+      return res.status(200).json({ success: false, error: "NO_TEXT" });
+    }
+
+    // --- 성공 반환 ---
+    return res.status(200).json({
+      success: true,
+      data: { text, tokens },
+      meta: { length: text.length, tokenCount: tokens.length }
+    });
+
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("❌ Vision Proxy Error:", err);
+    return res.status(500).json({ success: false, error: "SERVER_ERROR" });
   }
 }
